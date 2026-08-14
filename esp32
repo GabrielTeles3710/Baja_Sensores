@@ -1,342 +1,50 @@
 #include <Wire.h>
-#include <SPI.h>
-#include <SD.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+  const int SENSOR_RPM = 34;
+  int estadoAnterior = LOW;
 
-#define ONE_WIRE_BUS 12
+  volatile unsigned long ultimaVolta = 0;
+  float rpm = 0;
+  int voltas = 0;
 
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
-Adafruit_MPU6050 mpu;
-
-//==============================
-// PINOS
-//==============================
-const int SD_CS = 5;
-
-const int LED_OK    = 25;
-const int LED_GRAVA = 26;
-const int LED_ERRO  = 27;
-
-const int BOTAO = 33;
-
-//==============================
-// CONTROLE
-//==============================
-bool gravando = false;
-
-File arquivo;
-
-unsigned long ultimoTempo = 0;
-const unsigned long intervaloLeitura = 1000;
-
-unsigned long ultimoFlush = 0;
-const unsigned long intervaloFlush = 30000;
-
-//==============================
-// DEBOUNCE DO BOTÃO
-//==============================
-bool estadoBotao = HIGH;
-bool ultimoEstadoBotao = HIGH;
-
-unsigned long ultimoDebounce = 0;
-const unsigned long debounce = 50;
-
-unsigned long tempoPressionado = 0;
-
-//================================================
-// SETUP
-//================================================
 void setup() {
-
+  
+  pinMode(SENSOR_RPM, INPUT);
   Serial.begin(115200);
-  sensors.begin();
-
-  pinMode(LED_OK, OUTPUT);
-  pinMode(LED_GRAVA, OUTPUT);
-  pinMode(LED_ERRO, OUTPUT);
-
-  pinMode(BOTAO, INPUT_PULLUP);
-
-  digitalWrite(LED_OK, LOW);
-  digitalWrite(LED_GRAVA, LOW);
-  digitalWrite(LED_ERRO, LOW);
-
-  //-------------------------
-  // MPU6050
-  //-------------------------
-
-  Wire.begin(21,22);
-
-  if (!mpu.begin()) {
-
-    Serial.println("ERRO: MPU6050 nao encontrado");
-
-    digitalWrite(LED_ERRO, HIGH);
-
-    while(true);
-
-  }
-
-  Serial.println("MPU6050 OK");
-
-  //-------------------------
-  // SD
-  //-------------------------
-
-  if (!SD.begin(SD_CS)) {
-
-    Serial.println("ERRO: Cartao SD");
-
-    digitalWrite(LED_ERRO, HIGH);
-
-    while(true);
-
-  }
-
-  Serial.println("Cartao SD OK");
-
-  digitalWrite(LED_OK, HIGH);
-
-  //-------------------------
-  // Cabeçalho
-  //-------------------------
-
-  if (!SD.exists("/dados.csv")) {
-
-    File f = SD.open("/dados.csv", FILE_WRITE);
-
-    if (f) {
-
-      f.println("Tempo(ms),Ax,Ay,Az,Gx,Gy,Gz");
-
-      f.close();
-
-      Serial.println("Arquivo criado.");
-
-    }
-
-  }
 
 }
 
-//================================================
-// LOOP
-//================================================
-
 void loop() {
+  
+  int estadoAtual = digitalRead(SENSOR_RPM);
 
-  bool leitura = digitalRead(BOTAO);
+  if(estadoAtual == HIGH && estadoAnterior == LOW){
+    
+    voltas++;
 
-  if (leitura != ultimoEstadoBotao) {
+    unsigned long agora = millis();
 
-    ultimoDebounce = millis();
+    if(ultimaVolta > 0){
+      unsigned long intervalo = agora - ultimaVolta;
 
-  }
-
-  if ((millis() - ultimoDebounce) > debounce) {
-
-    if (leitura != estadoBotao) {
-
-      estadoBotao = leitura;
-
-      //--------------------------
-      // BOTÃO PRESSIONADO
-      //--------------------------
-
-      if (estadoBotao == LOW) {
-
-        tempoPressionado = millis();
-
-      }
-
-      //--------------------------
-      // BOTÃO SOLTO
-      //--------------------------
-
-      else {
-
-        unsigned long tempo = millis() - tempoPressionado;
-
-        //------------------------
-        // PRESSÃO LONGA
-        //------------------------
-
-        if (tempo >= 3000) {
-
-          if (gravando) {
-
-            arquivo.flush();
-
-            arquivo.close();
-
-            gravando = false;
-
-            digitalWrite(LED_GRAVA, LOW);
-
-            Serial.println("Arquivo fechado.");
-
-            for(int i=0;i<3;i++){
-
-              digitalWrite(LED_GRAVA,HIGH);
-              delay(200);
-
-              digitalWrite(LED_GRAVA,LOW);
-              delay(200);
-
-            }
-
-          }
-
-        }
-
-        //------------------------
-        // PRESSÃO CURTA
-        //------------------------
-
-        else {
-
-          if (!gravando) {
-
-            arquivo = SD.open("/dados.csv", FILE_APPEND);
-
-            if (!arquivo) {
-
-              Serial.println("Erro ao abrir arquivo.");
-
-              digitalWrite(LED_OK,LOW);
-              digitalWrite(LED_ERRO,HIGH);
-
-            }
-            else {
-
-              gravando = true;
-
-              digitalWrite(LED_GRAVA,HIGH);
-
-              ultimoFlush = millis();
-
-              Serial.println("Gravacao iniciada.");
-
-            }
-
-          }
-
-          else {
-
-            arquivo.flush();
-
-            arquivo.close();
-
-            gravando = false;
-
-            digitalWrite(LED_GRAVA,LOW);
-
-            Serial.println("Gravacao encerrada.");
-
-          }
-
-        }
-
-      }
-
+      rpm = 60000.0/intervalo; 
     }
 
+
+    ultimaVolta = agora;
+
+    if (millis() - ultimaVolta > 2000) {
+    rpm = 0;
+    }
+
+   Serial.print("RPM = ");
+    Serial.println(rpm); 
+
+
   }
 
-  ultimoEstadoBotao = leitura;
-  //----------------------------------------
-  // LEITURA DO MPU6050 E GRAVAÇÃO
-  //----------------------------------------
+  estadoAnterior = estadoAtual;
 
-  if (gravando && (millis() - ultimoTempo >= intervaloLeitura)) {
-
-    ultimoTempo = millis();
-
-    sensors_event_t accel, gyro, temp;
-    mpu.getEvent(&accel, &gyro, &temp);
-    sensors.requestTemperatures();
-
-    float temperatura = sensors.getTempCByIndex(0);
+  delay(1000);
 
   
-
-    //----------------------------------------
-    // MONTA A LINHA CSV
-    //----------------------------------------
-
-    String linha = "";
-
-    linha += String(millis());
-    linha += ",";
-
-    linha += String(accel.acceleration.x, 3);
-    linha += ",";
-
-    linha += String(accel.acceleration.y, 3);
-    linha += ",";
-
-    linha += String(accel.acceleration.z, 3);
-    linha += ",";
-
-    linha += String(gyro.gyro.x, 3);
-    linha += ",";
-
-    linha += String(gyro.gyro.y, 3);
-    linha += ",";
-
-    linha += String(gyro.gyro.z, 3);
-    linha += ",";
-
-    linha += String(temperatura, 3);
-
-    //----------------------------------------
-    // GRAVA NO SD
-    //----------------------------------------
-
-    arquivo.println(linha);
-
-    //----------------------------------------
-    // MOSTRA NO MONITOR SERIAL
-    //----------------------------------------
-
-    Serial.println(linha);
-
-    //----------------------------------------
-    // SE HOUVER ERRO DE ESCRITA
-    //----------------------------------------
-
-    if (arquivo.getWriteError()) {
-
-      Serial.println("ERRO AO ESCREVER NO SD");
-
-      digitalWrite(LED_GRAVA, LOW);
-      digitalWrite(LED_OK, LOW);
-      digitalWrite(LED_ERRO, HIGH);
-
-      arquivo.close();
-
-      gravando = false;
-
-    }
-
-  }
-
-  //----------------------------------------
-  // FLUSH AUTOMÁTICO
-  //----------------------------------------
-
-  if (gravando && (millis() - ultimoFlush >= intervaloFlush)) {
-
-    arquivo.flush();
-
-    ultimoFlush = millis();
-
-    Serial.println("Flush realizado.");
-
-  }
-
 }
