@@ -21,7 +21,22 @@
     },
     { "type": "wokwi-led", "id": "led1", "top": 6, "left": 80.6, "attrs": { "color": "green" } },
     { "type": "wokwi-led", "id": "led2", "top": 6, "left": 109.4, "attrs": { "color": "blue" } },
-    { "type": "wokwi-led", "id": "led3", "top": 6, "left": 138.2, "attrs": { "color": "red" } }
+    { "type": "wokwi-led", "id": "led3", "top": 6, "left": 138.2, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-ds18b20",
+      "id": "temp1",
+      "top": 85.27,
+      "left": -187.92,
+      "attrs": { "temperature": "64.2" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 167.15,
+      "left": -172.8,
+      "rotate": 180,
+      "attrs": { "value": "5000" }
+    }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
@@ -43,7 +58,12 @@
     [ "sd1:SCK", "esp:18", "green", [ "h153.6", "v-115.21" ] ],
     [ "sd1:DI", "esp:23", "green", [ "h163.2", "v-201.69" ] ],
     [ "sd1:DO", "esp:19", "green", [ "h153.6", "v-105.49" ] ],
-    [ "sd1:CS", "esp:5", "green", [ "h172.8", "v-134.34" ] ]
+    [ "sd1:CS", "esp:5", "green", [ "h172.8", "v-134.34" ] ],
+    [ "temp1:VCC", "esp:3V3", "red", [ "h86.4", "v-115.2" ] ],
+    [ "temp1:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "temp1:DQ", "esp:12", "green", [ "v0" ] ],
+    [ "temp1:DQ", "r1:2", "green", [ "v0" ] ],
+    [ "r1:1", "esp:3V3", "red", [ "h37", "v-86.1", "v-57.6" ] ]
   ],
   "dependencies": {}
 }
