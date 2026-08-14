@@ -3,7 +3,13 @@
 #include <SD.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
+#define ONE_WIRE_BUS 12
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
 Adafruit_MPU6050 mpu;
 
 //==============================
@@ -47,6 +53,7 @@ unsigned long tempoPressionado = 0;
 void setup() {
 
   Serial.begin(115200);
+  sensors.begin();
 
   pinMode(LED_OK, OUTPUT);
   pinMode(LED_GRAVA, OUTPUT);
@@ -250,8 +257,12 @@ void loop() {
     ultimoTempo = millis();
 
     sensors_event_t accel, gyro, temp;
-
     mpu.getEvent(&accel, &gyro, &temp);
+    sensors.requestTemperatures();
+
+    float temperatura = sensors.getTempCByIndex(0);
+
+  
 
     //----------------------------------------
     // MONTA A LINHA CSV
@@ -278,6 +289,9 @@ void loop() {
     linha += ",";
 
     linha += String(gyro.gyro.z, 3);
+    linha += ",";
+
+    linha += String(temperatura, 3);
 
     //----------------------------------------
     // GRAVA NO SD
