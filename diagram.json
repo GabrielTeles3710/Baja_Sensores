@@ -1,622 +1,73 @@
-#include <Wire.h>
-#include <SPI.h>
-#include <SD.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
-
-//================================================
-// SENSOR DE TEMPERATURA
-//================================================
-
-#define ONE_WIRE_BUS 12
-
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
-
-Adafruit_MPU6050 mpu;
-
-//================================================
-// PINOS
-//================================================
-
-const int SD_CS = 5;
-
-const int LED_OK    = 25;
-const int LED_GRAVA = 26;
-const int LED_ERRO  = 27;
-
-const int BOTAO = 33;
-const int POT = 34;
-
-//================================================
-// CONTROLE
-//================================================
-
-bool gravando = false;
-
-File arquivo;
-
-//================================================
-// LEITURA
-//================================================
-
-// 100 Hz
-const unsigned long intervaloLeitura = 10;
-
-unsigned long ultimoTempo = 0;
-
-//================================================
-// TEMPERATURA
-//================================================
-
-const unsigned long intervaloTemperatura = 1000;
-
-unsigned long ultimaTemperatura = 0;
-
-float temperatura = 0;
-
-//================================================
-// FLUSH
-//================================================
-
-unsigned long ultimoFlush = 0;
-
-const unsigned long intervaloFlush = 30000;
-
-//================================================
-// CALIBRAÇÃO
-//================================================
-
-const unsigned long tempoCalibracao = 10000;
-
-float offsetGx = 0;
-float offsetGy = 0;
-float offsetGz = 0;
-
-//================================================
-// LIMITES DO GIROSCÓPIO
-//================================================
-
-const float LIMITE_GYRO = 250.0;
-
-//================================================
-// BOTÃO
-//================================================
-
-bool estadoBotao = HIGH;
-bool ultimoEstadoBotao = HIGH;
-
-unsigned long ultimoDebounce = 0;
-
-const unsigned long debounce = 50;
-
-unsigned long tempoPressionado = 0;
-
-//================================================
-// FUNÇÃO PARA LIMITAR VALOR
-//================================================
-
-float limitarGyro(float valor) {
-
-  if (valor > LIMITE_GYRO) {
-    valor = LIMITE_GYRO;
-  }
-
-  if (valor < -LIMITE_GYRO) {
-    valor = -LIMITE_GYRO;
-  }
-
-  return valor;
-}
-
-//================================================
-// SETUP
-//================================================
-
-void setup() {
-
-  Serial.begin(115200);
-
-  delay(1000);
-
-  //================================================
-  // TEMPERATURA
-  //================================================
-
-  sensors.begin();
-
-  //================================================
-  // PINOS
-  //================================================
-
-  pinMode(LED_OK, OUTPUT);
-  pinMode(LED_GRAVA, OUTPUT);
-  pinMode(LED_ERRO, OUTPUT);
-
-  pinMode(BOTAO, INPUT_PULLUP);
-
-  digitalWrite(LED_OK, LOW);
-  digitalWrite(LED_GRAVA, LOW);
-  digitalWrite(LED_ERRO, LOW);
-
-  //================================================
-  // I2C
-  //================================================
-
-  Wire.begin(21, 22);
-
-  //================================================
-  // MPU6050
-  //================================================
-
-  Serial.println("Inicializando MPU6050...");
-
-  if (!mpu.begin()) {
-
-    Serial.println("ERRO: MPU6050 nao encontrado");
-
-    digitalWrite(LED_ERRO, HIGH);
-
-    while (true) {
-      delay(1000);
-    }
-  }
-
-  Serial.println("MPU6050 OK");
-
-  //================================================
-  // CONFIGURAÇÃO DO GIROSCÓPIO
-  //================================================
-
-  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
-
-  // Filtro
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-
-  Serial.println("Giroscopio configurado em +/-250 graus/s");
-
-  //================================================
-  // SD
-  //================================================
-
-  if (!SD.begin(SD_CS)) {
-
-    Serial.println("ERRO: Cartao SD");
-
-    digitalWrite(LED_ERRO, HIGH);
-
-    while (true) {
-      delay(1000);
-    }
-  }
-
-  Serial.println("Cartao SD OK");
-
-  digitalWrite(LED_OK, HIGH);
-
-  //================================================
-  // CABEÇALHO
-  //================================================
-
-  if (!SD.exists("/dados.csv")) {
-
-    File f = SD.open("/dados.csv", FILE_WRITE);
-
-    if (f) {
-
-      f.println(
-        "Tempo(ms),Gx,Gy,Gz,Temperatura,Pot_Porcentagem"
-      );
-
-      f.close();
-
-      Serial.println("Arquivo criado.");
-    }
-  }
-
-  Serial.println();
-  Serial.println("====================================");
-  Serial.println(" SISTEMA PRONTO");
-  Serial.println("====================================");
-  Serial.println("Pressao curta = iniciar");
-  Serial.println("Pressao longa = encerrar");
-  Serial.println();
-}
-
-//================================================
-// CALIBRAÇÃO
-//================================================
-
-void calibrarGiroscopio() {
-
-  Serial.println();
-  Serial.println("====================================");
-  Serial.println(" CALIBRACAO DO GIROSCOPIO");
-  Serial.println("====================================");
-
-  Serial.println("MOTOR LIGADO");
-  Serial.println("CARRO PARADO");
-  Serial.println();
-  Serial.println("IMPORTANTE:");
-  Serial.println("O giroscopio deve estar em repouso.");
-  Serial.println("Nao coloque rotacao durante a calibracao.");
-  Serial.println();
-
-  double somaGx = 0;
-  double somaGy = 0;
-  double somaGz = 0;
-
-  unsigned long inicio = millis();
-
-  unsigned long quantidadeAmostras = 0;
-
-  bool estadoLED = false;
-
-  unsigned long ultimoLED = millis();
-
-  while (millis() - inicio < tempoCalibracao) {
-
-    sensors_event_t accel;
-    sensors_event_t gyro;
-    sensors_event_t temp;
-
-    mpu.getEvent(&accel, &gyro, &temp);
-
-    //================================================
-    // A BIBLIOTECA FORNECE RAD/S
-    // CONVERTE PARA GRAUS/S
-    //================================================
-
-    float Gx = gyro.gyro.x * 180.0 / PI;
-    float Gy = gyro.gyro.y * 180.0 / PI;
-    float Gz = gyro.gyro.z * 180.0 / PI;
-
-    somaGx += Gx;
-    somaGy += Gy;
-    somaGz += Gz;
-
-    quantidadeAmostras++;
-
-    //================================================
-    // LED PISCANDO
-    //================================================
-
-    if (millis() - ultimoLED >= 250) {
-
-      ultimoLED = millis();
-
-      estadoLED = !estadoLED;
-
-      digitalWrite(LED_GRAVA, estadoLED);
-    }
-
-    delay(10);
-  }
-
-  digitalWrite(LED_GRAVA, LOW);
-
-  //================================================
-  // CALCULA OFFSET
-  //================================================
-
-  if (quantidadeAmostras > 0) {
-
-    offsetGx = somaGx / quantidadeAmostras;
-    offsetGy = somaGy / quantidadeAmostras;
-    offsetGz = somaGz / quantidadeAmostras;
-  }
-
-  Serial.println();
-  Serial.println("CALIBRACAO CONCLUIDA");
-
-  Serial.print("Offset Gx = ");
-  Serial.print(offsetGx, 4);
-  Serial.println(" graus/s");
-
-  Serial.print("Offset Gy = ");
-  Serial.print(offsetGy, 4);
-  Serial.println(" graus/s");
-
-  Serial.print("Offset Gz = ");
-  Serial.print(offsetGz, 4);
-  Serial.println(" graus/s");
-
-  Serial.print("Amostras = ");
-  Serial.println(quantidadeAmostras);
-
-  Serial.println();
-}
-
-//================================================
-// INICIAR GRAVAÇÃO
-//================================================
-
-void iniciarGravacao() {
-
-  //================================================
-  // CALIBRA
-  //================================================
-
-  calibrarGiroscopio();
-
-  //================================================
-  // ABRE SD
-  //================================================
-
-  arquivo = SD.open("/dados.csv", FILE_APPEND);
-
-  if (!arquivo) {
-
-    Serial.println("Erro ao abrir arquivo.");
-
-    digitalWrite(LED_OK, LOW);
-    digitalWrite(LED_ERRO, HIGH);
-
-    return;
-  }
-
-  //================================================
-  // INICIA
-  //================================================
-
-  gravando = true;
-
-  digitalWrite(LED_GRAVA, HIGH);
-
-  ultimoFlush = millis();
-
-  ultimoTempo = millis();
-
-  Serial.println("====================================");
-  Serial.println(" GRAVACAO INICIADA");
-  Serial.println("====================================");
-
-  Serial.println("Tempo(ms),Gx,Gy,Gz,Temperatura,Pot");
-}
-
-//================================================
-// ENCERRAR GRAVAÇÃO
-//================================================
-
-void encerrarGravacao() {
-
-  if (gravando) {
-
-    arquivo.flush();
-
-    arquivo.close();
-
-    gravando = false;
-
-    digitalWrite(LED_GRAVA, LOW);
-
-    Serial.println("Arquivo fechado.");
-
-    // Pisca 3 vezes
-
-    for (int i = 0; i < 3; i++) {
-
-      digitalWrite(LED_GRAVA, HIGH);
-      delay(200);
-
-      digitalWrite(LED_GRAVA, LOW);
-      delay(200);
-    }
-  }
-}
-
-//================================================
-// LOOP
-//================================================
-
-void loop() {
-
-  //================================================
-  // BOTÃO
-  //================================================
-
-  bool leituraBotao = digitalRead(BOTAO);
-
-  if (leituraBotao != ultimoEstadoBotao) {
-
-    ultimoDebounce = millis();
-  }
-
-  if ((millis() - ultimoDebounce) > debounce) {
-
-    if (leituraBotao != estadoBotao) {
-
-      estadoBotao = leituraBotao;
-
-      //========================================
-      // PRESSIONADO
-      //========================================
-
-      if (estadoBotao == LOW) {
-
-        tempoPressionado = millis();
-      }
-
-      //========================================
-      // SOLTO
-      //========================================
-
-      else {
-
-        unsigned long tempo =
-          millis() - tempoPressionado;
-
-        //======================================
-        // PRESSÃO LONGA
-        //======================================
-
-        if (tempo >= 3000) {
-
-          encerrarGravacao();
-        }
-
-        //======================================
-        // PRESSÃO CURTA
-        //======================================
-
-        else {
-
-          if (!gravando) {
-
-            iniciarGravacao();
-          }
-
-          else {
-
-            encerrarGravacao();
-          }
-        }
-      }
-    }
-  }
-
-  ultimoEstadoBotao = leituraBotao;
-
-  //================================================
-  // LEITURA DO MPU6050
-  //================================================
-
-  if (
-    gravando &&
-    (millis() - ultimoTempo >= intervaloLeitura)
-  ) {
-
-    ultimoTempo = millis();
-
-    sensors_event_t accel;
-    sensors_event_t gyro;
-    sensors_event_t temp;
-
-    mpu.getEvent(&accel, &gyro, &temp);
-
-    //================================================
-    // CONVERSÃO RAD/S → GRAUS/S
-    //================================================
-
-    float Gx =
-      gyro.gyro.x * 180.0 / PI;
-
-    float Gy =
-      gyro.gyro.y * 180.0 / PI;
-
-    float Gz =
-      gyro.gyro.z * 180.0 / PI;
-
-    //================================================
-    // ABATE O OFFSET
-    //================================================
-
-    Gx = Gx - offsetGx;
-    Gy = Gy - offsetGy;
-    Gz = Gz - offsetGz;
-
-    //================================================
-    // LIMITA À FAIXA ±250 °/S
-    //================================================
-
-    Gx = limitarGyro(Gx);
-    Gy = limitarGyro(Gy);
-    Gz = limitarGyro(Gz);
-
-    //================================================
-    // POTENCIÔMETRO
-    //================================================
-
-    int leituraPot = analogRead(POT);
-
-    float porcentagem =
-      leituraPot * 100.0 / 4095.0;
-
-    //================================================
-    // TEMPERATURA
-    //================================================
-
-    if (
-      millis() - ultimaTemperatura >=
-      intervaloTemperatura
-    ) {
-
-      ultimaTemperatura = millis();
-
-      sensors.requestTemperatures();
-
-      temperatura =
-        sensors.getTempCByIndex(0);
-    }
-
-    //================================================
-    // MONTA CSV
-    //================================================
-
-    String linha = "";
-
-    linha += String(millis());
-    linha += ",";
-
-    linha += String(Gx, 3);
-    linha += ",";
-
-    linha += String(Gy, 3);
-    linha += ",";
-
-    linha += String(Gz, 3);
-    linha += ",";
-
-    linha += String(temperatura, 2);
-    linha += ",";
-
-    linha += String(porcentagem, 2);
-
-    //================================================
-    // GRAVA SD
-    //================================================
-
-    arquivo.println(linha);
-
-    //================================================
-    // SERIAL
-    //================================================
-
-    Serial.println(linha);
-
-    //================================================
-    // ERRO SD
-    //================================================
-
-    if (arquivo.getWriteError()) {
-
-      Serial.println("ERRO AO ESCREVER NO SD");
-
-      digitalWrite(LED_GRAVA, LOW);
-      digitalWrite(LED_OK, LOW);
-      digitalWrite(LED_ERRO, HIGH);
-
-      arquivo.close();
-
-      gravando = false;
-    }
-  }
-
-  //================================================
-  // FLUSH
-  //================================================
-
-  if (
-    gravando &&
-    (millis() - ultimoFlush >= intervaloFlush)
-  ) {
-
-    arquivo.flush();
-
-    ultimoFlush = millis();
-
-    Serial.println("Flush realizado.");
-  }
+{
+  "version": 1,
+  "author": "Anonymous maker",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": -52.76, "attrs": {} },
+    { "type": "wokwi-mpu6050", "id": "imu1", "top": 23.02, "left": -180.08, "attrs": {} },
+    {
+      "type": "wokwi-microsd-card",
+      "id": "sd1",
+      "top": 182.63,
+      "left": -172.73,
+      "attrs": { "directory": "/sdcard" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 44.6,
+      "left": 163.2,
+      "attrs": { "color": "green", "xray": "1", "key": " " }
+    },
+    { "type": "wokwi-led", "id": "led1", "top": 6, "left": 80.6, "attrs": { "color": "green" } },
+    { "type": "wokwi-led", "id": "led2", "top": 6, "left": 109.4, "attrs": { "color": "blue" } },
+    { "type": "wokwi-led", "id": "led3", "top": 6, "left": 138.2, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-ds18b20",
+      "id": "temp1",
+      "top": 85.27,
+      "left": -187.92,
+      "attrs": { "temperature": "-2.7" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 167.15,
+      "left": -172.8,
+      "rotate": 180,
+      "attrs": { "value": "5000" }
+    },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": -68.5, "left": -115.4, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "imu1:VCC", "esp:3V3", "red", [ "v0" ] ],
+    [ "imu1:GND", "esp:GND.1", "black", [ "h28.88", "v57.6" ] ],
+    [ "imu1:SDA", "esp:21", "green", [ "h0.08", "v-9.6", "h192", "v57.6" ] ],
+    [ "imu1:SCL", "esp:22", "green", [ "v-9.6", "h182.48", "v28.8" ] ],
+    [ "led1:A", "esp:25", "green", [ "v57.6", "h-153.75" ] ],
+    [ "led1:C", "esp:GND.2", "black", [ "h-38", "v-19.2" ] ],
+    [ "led2:A", "esp:26", "blue", [ "v0" ] ],
+    [ "led2:C", "esp:GND.2", "black", [ "h-66.8", "v-19.2" ] ],
+    [ "led3:C", "esp:GND.2", "black", [ "h-95.6", "v-19.2" ] ],
+    [ "led3:A", "esp:27", "red", [ "v0" ] ],
+    [ "btn1:1.l", "esp:33", "green", [ "h0" ] ],
+    [ "btn1:2.l", "esp:GND.2", "black", [ "h-105.6", "v-47.8" ] ],
+    [ "sd1:VCC", "esp:3V3", "red", [ "h19.2", "v-201.46" ] ],
+    [ "sd1:GND", "esp:GND.1", "black", [ "h38.4", "v-57.49" ] ],
+    [ "sd1:SCK", "esp:18", "green", [ "h153.6", "v-115.21" ] ],
+    [ "sd1:DI", "esp:23", "green", [ "h163.2", "v-201.69" ] ],
+    [ "sd1:DO", "esp:19", "green", [ "h153.6", "v-105.49" ] ],
+    [ "sd1:CS", "esp:5", "green", [ "h172.8", "v-134.34" ] ],
+    [ "temp1:VCC", "esp:3V3", "red", [ "h86.4", "v-115.2" ] ],
+    [ "temp1:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "temp1:DQ", "esp:12", "green", [ "v0" ] ],
+    [ "temp1:DQ", "r1:2", "green", [ "v0" ] ],
+    [ "r1:1", "esp:3V3", "red", [ "h37", "v-86.1", "v-57.6" ] ],
+    [ "pot1:GND", "esp:GND.1", "black", [ "v115.2", "v38.4" ] ],
+    [ "pot1:VCC", "esp:3V3", "red", [ "v0" ] ],
+    [ "pot1:SIG", "esp:34", "green", [ "v0" ] ]
+  ],
+  "dependencies": {}
 }
