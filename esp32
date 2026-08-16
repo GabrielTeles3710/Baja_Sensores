@@ -6,15 +6,21 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+//================================================
+// SENSOR DE TEMPERATURA
+//================================================
+
 #define ONE_WIRE_BUS 12
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
+
 Adafruit_MPU6050 mpu;
 
-//==============================
+//================================================
 // PINOS
-//==============================
+//================================================
+
 const int SD_CS = 5;
 
 const int LED_OK    = 25;
@@ -22,38 +28,108 @@ const int LED_GRAVA = 26;
 const int LED_ERRO  = 27;
 
 const int BOTAO = 33;
+const int POT = 34;
 
-//==============================
+//================================================
 // CONTROLE
-//==============================
+//================================================
+
 bool gravando = false;
 
 File arquivo;
 
+//================================================
+// LEITURA
+//================================================
+
+// 100 Hz
+const unsigned long intervaloLeitura = 10;
+
 unsigned long ultimoTempo = 0;
-const unsigned long intervaloLeitura = 1000;
+
+//================================================
+// TEMPERATURA
+//================================================
+
+const unsigned long intervaloTemperatura = 1000;
+
+unsigned long ultimaTemperatura = 0;
+
+float temperatura = 0;
+
+//================================================
+// FLUSH
+//================================================
 
 unsigned long ultimoFlush = 0;
+
 const unsigned long intervaloFlush = 30000;
 
-//==============================
-// DEBOUNCE DO BOTÃO
-//==============================
+//================================================
+// CALIBRAÇÃO
+//================================================
+
+const unsigned long tempoCalibracao = 10000;
+
+float offsetGx = 0;
+float offsetGy = 0;
+float offsetGz = 0;
+
+//================================================
+// LIMITES DO GIROSCÓPIO
+//================================================
+
+const float LIMITE_GYRO = 250.0;
+
+//================================================
+// BOTÃO
+//================================================
+
 bool estadoBotao = HIGH;
 bool ultimoEstadoBotao = HIGH;
 
 unsigned long ultimoDebounce = 0;
+
 const unsigned long debounce = 50;
 
 unsigned long tempoPressionado = 0;
 
 //================================================
+// FUNÇÃO PARA LIMITAR VALOR
+//================================================
+
+float limitarGyro(float valor) {
+
+  if (valor > LIMITE_GYRO) {
+    valor = LIMITE_GYRO;
+  }
+
+  if (valor < -LIMITE_GYRO) {
+    valor = -LIMITE_GYRO;
+  }
+
+  return valor;
+}
+
+//================================================
 // SETUP
 //================================================
+
 void setup() {
 
   Serial.begin(115200);
+
+  delay(1000);
+
+  //================================================
+  // TEMPERATURA
+  //================================================
+
   sensors.begin();
+
+  //================================================
+  // PINOS
+  //================================================
 
   pinMode(LED_OK, OUTPUT);
   pinMode(LED_GRAVA, OUTPUT);
@@ -65,11 +141,17 @@ void setup() {
   digitalWrite(LED_GRAVA, LOW);
   digitalWrite(LED_ERRO, LOW);
 
-  //-------------------------
-  // MPU6050
-  //-------------------------
+  //================================================
+  // I2C
+  //================================================
 
-  Wire.begin(21,22);
+  Wire.begin(21, 22);
+
+  //================================================
+  // MPU6050
+  //================================================
+
+  Serial.println("Inicializando MPU6050...");
 
   if (!mpu.begin()) {
 
@@ -77,15 +159,27 @@ void setup() {
 
     digitalWrite(LED_ERRO, HIGH);
 
-    while(true);
-
+    while (true) {
+      delay(1000);
+    }
   }
 
   Serial.println("MPU6050 OK");
 
-  //-------------------------
+  //================================================
+  // CONFIGURAÇÃO DO GIROSCÓPIO
+  //================================================
+
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+
+  // Filtro
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  Serial.println("Giroscopio configurado em +/-250 graus/s");
+
+  //================================================
   // SD
-  //-------------------------
+  //================================================
 
   if (!SD.begin(SD_CS)) {
 
@@ -93,17 +187,18 @@ void setup() {
 
     digitalWrite(LED_ERRO, HIGH);
 
-    while(true);
-
+    while (true) {
+      delay(1000);
+    }
   }
 
   Serial.println("Cartao SD OK");
 
   digitalWrite(LED_OK, HIGH);
 
-  //-------------------------
-  // Cabeçalho
-  //-------------------------
+  //================================================
+  // CABEÇALHO
+  //================================================
 
   if (!SD.exists("/dados.csv")) {
 
@@ -111,16 +206,205 @@ void setup() {
 
     if (f) {
 
-      f.println("Tempo(ms),Ax,Ay,Az,Gx,Gy,Gz");
+      f.println(
+        "Tempo(ms),Gx,Gy,Gz,Temperatura,Pot_Porcentagem"
+      );
 
       f.close();
 
       Serial.println("Arquivo criado.");
-
     }
-
   }
 
+  Serial.println();
+  Serial.println("====================================");
+  Serial.println(" SISTEMA PRONTO");
+  Serial.println("====================================");
+  Serial.println("Pressao curta = iniciar");
+  Serial.println("Pressao longa = encerrar");
+  Serial.println();
+}
+
+//================================================
+// CALIBRAÇÃO
+//================================================
+
+void calibrarGiroscopio() {
+
+  Serial.println();
+  Serial.println("====================================");
+  Serial.println(" CALIBRACAO DO GIROSCOPIO");
+  Serial.println("====================================");
+
+  Serial.println("MOTOR LIGADO");
+  Serial.println("CARRO PARADO");
+  Serial.println();
+  Serial.println("IMPORTANTE:");
+  Serial.println("O giroscopio deve estar em repouso.");
+  Serial.println("Nao coloque rotacao durante a calibracao.");
+  Serial.println();
+
+  double somaGx = 0;
+  double somaGy = 0;
+  double somaGz = 0;
+
+  unsigned long inicio = millis();
+
+  unsigned long quantidadeAmostras = 0;
+
+  bool estadoLED = false;
+
+  unsigned long ultimoLED = millis();
+
+  while (millis() - inicio < tempoCalibracao) {
+
+    sensors_event_t accel;
+    sensors_event_t gyro;
+    sensors_event_t temp;
+
+    mpu.getEvent(&accel, &gyro, &temp);
+
+    //================================================
+    // A BIBLIOTECA FORNECE RAD/S
+    // CONVERTE PARA GRAUS/S
+    //================================================
+
+    float Gx = gyro.gyro.x * 180.0 / PI;
+    float Gy = gyro.gyro.y * 180.0 / PI;
+    float Gz = gyro.gyro.z * 180.0 / PI;
+
+    somaGx += Gx;
+    somaGy += Gy;
+    somaGz += Gz;
+
+    quantidadeAmostras++;
+
+    //================================================
+    // LED PISCANDO
+    //================================================
+
+    if (millis() - ultimoLED >= 250) {
+
+      ultimoLED = millis();
+
+      estadoLED = !estadoLED;
+
+      digitalWrite(LED_GRAVA, estadoLED);
+    }
+
+    delay(10);
+  }
+
+  digitalWrite(LED_GRAVA, LOW);
+
+  //================================================
+  // CALCULA OFFSET
+  //================================================
+
+  if (quantidadeAmostras > 0) {
+
+    offsetGx = somaGx / quantidadeAmostras;
+    offsetGy = somaGy / quantidadeAmostras;
+    offsetGz = somaGz / quantidadeAmostras;
+  }
+
+  Serial.println();
+  Serial.println("CALIBRACAO CONCLUIDA");
+
+  Serial.print("Offset Gx = ");
+  Serial.print(offsetGx, 4);
+  Serial.println(" graus/s");
+
+  Serial.print("Offset Gy = ");
+  Serial.print(offsetGy, 4);
+  Serial.println(" graus/s");
+
+  Serial.print("Offset Gz = ");
+  Serial.print(offsetGz, 4);
+  Serial.println(" graus/s");
+
+  Serial.print("Amostras = ");
+  Serial.println(quantidadeAmostras);
+
+  Serial.println();
+}
+
+//================================================
+// INICIAR GRAVAÇÃO
+//================================================
+
+void iniciarGravacao() {
+
+  //================================================
+  // CALIBRA
+  //================================================
+
+  calibrarGiroscopio();
+
+  //================================================
+  // ABRE SD
+  //================================================
+
+  arquivo = SD.open("/dados.csv", FILE_APPEND);
+
+  if (!arquivo) {
+
+    Serial.println("Erro ao abrir arquivo.");
+
+    digitalWrite(LED_OK, LOW);
+    digitalWrite(LED_ERRO, HIGH);
+
+    return;
+  }
+
+  //================================================
+  // INICIA
+  //================================================
+
+  gravando = true;
+
+  digitalWrite(LED_GRAVA, HIGH);
+
+  ultimoFlush = millis();
+
+  ultimoTempo = millis();
+
+  Serial.println("====================================");
+  Serial.println(" GRAVACAO INICIADA");
+  Serial.println("====================================");
+
+  Serial.println("Tempo(ms),Gx,Gy,Gz,Temperatura,Pot");
+}
+
+//================================================
+// ENCERRAR GRAVAÇÃO
+//================================================
+
+void encerrarGravacao() {
+
+  if (gravando) {
+
+    arquivo.flush();
+
+    arquivo.close();
+
+    gravando = false;
+
+    digitalWrite(LED_GRAVA, LOW);
+
+    Serial.println("Arquivo fechado.");
+
+    // Pisca 3 vezes
+
+    for (int i = 0; i < 3; i++) {
+
+      digitalWrite(LED_GRAVA, HIGH);
+      delay(200);
+
+      digitalWrite(LED_GRAVA, LOW);
+      delay(200);
+    }
+  }
 }
 
 //================================================
@@ -129,185 +413,182 @@ void setup() {
 
 void loop() {
 
-  bool leitura = digitalRead(BOTAO);
+  //================================================
+  // BOTÃO
+  //================================================
 
-  if (leitura != ultimoEstadoBotao) {
+  bool leituraBotao = digitalRead(BOTAO);
+
+  if (leituraBotao != ultimoEstadoBotao) {
 
     ultimoDebounce = millis();
-
   }
 
   if ((millis() - ultimoDebounce) > debounce) {
 
-    if (leitura != estadoBotao) {
+    if (leituraBotao != estadoBotao) {
 
-      estadoBotao = leitura;
+      estadoBotao = leituraBotao;
 
-      //--------------------------
-      // BOTÃO PRESSIONADO
-      //--------------------------
+      //========================================
+      // PRESSIONADO
+      //========================================
 
       if (estadoBotao == LOW) {
 
         tempoPressionado = millis();
-
       }
 
-      //--------------------------
-      // BOTÃO SOLTO
-      //--------------------------
+      //========================================
+      // SOLTO
+      //========================================
 
       else {
 
-        unsigned long tempo = millis() - tempoPressionado;
+        unsigned long tempo =
+          millis() - tempoPressionado;
 
-        //------------------------
+        //======================================
         // PRESSÃO LONGA
-        //------------------------
+        //======================================
 
         if (tempo >= 3000) {
 
-          if (gravando) {
-
-            arquivo.flush();
-
-            arquivo.close();
-
-            gravando = false;
-
-            digitalWrite(LED_GRAVA, LOW);
-
-            Serial.println("Arquivo fechado.");
-
-            for(int i=0;i<3;i++){
-
-              digitalWrite(LED_GRAVA,HIGH);
-              delay(200);
-
-              digitalWrite(LED_GRAVA,LOW);
-              delay(200);
-
-            }
-
-          }
-
+          encerrarGravacao();
         }
 
-        //------------------------
+        //======================================
         // PRESSÃO CURTA
-        //------------------------
+        //======================================
 
         else {
 
           if (!gravando) {
 
-            arquivo = SD.open("/dados.csv", FILE_APPEND);
-
-            if (!arquivo) {
-
-              Serial.println("Erro ao abrir arquivo.");
-
-              digitalWrite(LED_OK,LOW);
-              digitalWrite(LED_ERRO,HIGH);
-
-            }
-            else {
-
-              gravando = true;
-
-              digitalWrite(LED_GRAVA,HIGH);
-
-              ultimoFlush = millis();
-
-              Serial.println("Gravacao iniciada.");
-
-            }
-
+            iniciarGravacao();
           }
 
           else {
 
-            arquivo.flush();
-
-            arquivo.close();
-
-            gravando = false;
-
-            digitalWrite(LED_GRAVA,LOW);
-
-            Serial.println("Gravacao encerrada.");
-
+            encerrarGravacao();
           }
-
         }
-
       }
-
     }
-
   }
 
-  ultimoEstadoBotao = leitura;
-  //----------------------------------------
-  // LEITURA DO MPU6050 E GRAVAÇÃO
-  //----------------------------------------
+  ultimoEstadoBotao = leituraBotao;
 
-  if (gravando && (millis() - ultimoTempo >= intervaloLeitura)) {
+  //================================================
+  // LEITURA DO MPU6050
+  //================================================
+
+  if (
+    gravando &&
+    (millis() - ultimoTempo >= intervaloLeitura)
+  ) {
 
     ultimoTempo = millis();
 
-    sensors_event_t accel, gyro, temp;
+    sensors_event_t accel;
+    sensors_event_t gyro;
+    sensors_event_t temp;
+
     mpu.getEvent(&accel, &gyro, &temp);
-    sensors.requestTemperatures();
 
-    float temperatura = sensors.getTempCByIndex(0);
+    //================================================
+    // CONVERSÃO RAD/S → GRAUS/S
+    //================================================
 
-  
+    float Gx =
+      gyro.gyro.x * 180.0 / PI;
 
-    //----------------------------------------
-    // MONTA A LINHA CSV
-    //----------------------------------------
+    float Gy =
+      gyro.gyro.y * 180.0 / PI;
+
+    float Gz =
+      gyro.gyro.z * 180.0 / PI;
+
+    //================================================
+    // ABATE O OFFSET
+    //================================================
+
+    Gx = Gx - offsetGx;
+    Gy = Gy - offsetGy;
+    Gz = Gz - offsetGz;
+
+    //================================================
+    // LIMITA À FAIXA ±250 °/S
+    //================================================
+
+    Gx = limitarGyro(Gx);
+    Gy = limitarGyro(Gy);
+    Gz = limitarGyro(Gz);
+
+    //================================================
+    // POTENCIÔMETRO
+    //================================================
+
+    int leituraPot = analogRead(POT);
+
+    float porcentagem =
+      leituraPot * 100.0 / 4095.0;
+
+    //================================================
+    // TEMPERATURA
+    //================================================
+
+    if (
+      millis() - ultimaTemperatura >=
+      intervaloTemperatura
+    ) {
+
+      ultimaTemperatura = millis();
+
+      sensors.requestTemperatures();
+
+      temperatura =
+        sensors.getTempCByIndex(0);
+    }
+
+    //================================================
+    // MONTA CSV
+    //================================================
 
     String linha = "";
 
     linha += String(millis());
     linha += ",";
 
-    linha += String(accel.acceleration.x, 3);
+    linha += String(Gx, 3);
     linha += ",";
 
-    linha += String(accel.acceleration.y, 3);
+    linha += String(Gy, 3);
     linha += ",";
 
-    linha += String(accel.acceleration.z, 3);
+    linha += String(Gz, 3);
     linha += ",";
 
-    linha += String(gyro.gyro.x, 3);
+    linha += String(temperatura, 2);
     linha += ",";
 
-    linha += String(gyro.gyro.y, 3);
-    linha += ",";
+    linha += String(porcentagem, 2);
 
-    linha += String(gyro.gyro.z, 3);
-    linha += ",";
-
-    linha += String(temperatura, 3);
-
-    //----------------------------------------
-    // GRAVA NO SD
-    //----------------------------------------
+    //================================================
+    // GRAVA SD
+    //================================================
 
     arquivo.println(linha);
 
-    //----------------------------------------
-    // MOSTRA NO MONITOR SERIAL
-    //----------------------------------------
+    //================================================
+    // SERIAL
+    //================================================
 
     Serial.println(linha);
 
-    //----------------------------------------
-    // SE HOUVER ERRO DE ESCRITA
-    //----------------------------------------
+    //================================================
+    // ERRO SD
+    //================================================
 
     if (arquivo.getWriteError()) {
 
@@ -320,23 +601,22 @@ void loop() {
       arquivo.close();
 
       gravando = false;
-
     }
-
   }
 
-  //----------------------------------------
-  // FLUSH AUTOMÁTICO
-  //----------------------------------------
+  //================================================
+  // FLUSH
+  //================================================
 
-  if (gravando && (millis() - ultimoFlush >= intervaloFlush)) {
+  if (
+    gravando &&
+    (millis() - ultimoFlush >= intervaloFlush)
+  ) {
 
     arquivo.flush();
 
     ultimoFlush = millis();
 
     Serial.println("Flush realizado.");
-
   }
-
 }
