@@ -1,50 +1,100 @@
-#include <Wire.h>
-  const int SENSOR_RPM = 34;
-  int estadoAnterior = LOW;
+const int SENSOR_RPM = 34;
 
-  volatile unsigned long ultimaVolta = 0;
-  float rpm = 0;
-  int voltas = 0;
+const float CIRCUNFERENCIA = 1.755; // metros
 
-void setup() {
-  
-  pinMode(SENSOR_RPM, INPUT);
-  Serial.begin(115200);
+const int METAIS_POR_VOLTA = 2;
 
+volatile unsigned long ultimoPulso = 0;
+volatile unsigned long intervaloPulso = 0;
+volatile unsigned long pulsos = 0;
+
+float rpm = 0;
+float velocidade = 0;
+
+unsigned long ultimoPrint = 0;
+
+
+// Interrupção
+void IRAM_ATTR detectarPulso() {
+
+    unsigned long agora = micros();
+
+    if (ultimoPulso > 0) {
+        intervaloPulso = agora - ultimoPulso;
+    }
+
+    ultimoPulso = agora;
+
+    pulsos++;
 }
 
+
+void setup() {
+
+    Serial.begin(115200);
+
+    pinMode(SENSOR_RPM, INPUT);
+
+    attachInterrupt(
+        digitalPinToInterrupt(SENSOR_RPM),
+        detectarPulso,
+        FALLING
+    );
+}
+
+
 void loop() {
-  
-  int estadoAtual = digitalRead(SENSOR_RPM);
 
-  if(estadoAtual == HIGH && estadoAnterior == LOW){
-    
-    voltas++;
+    unsigned long intervaloAtual;
+    unsigned long ultimoPulsoAtual;
+    unsigned long pulsosAtual;
 
-    unsigned long agora = millis();
+    // Copia os valores de forma segura
+    noInterrupts();
 
-    if(ultimaVolta > 0){
-      unsigned long intervalo = agora - ultimaVolta;
+    intervaloAtual = intervaloPulso;
+    ultimoPulsoAtual = ultimoPulso;
+    pulsosAtual = pulsos;
 
-      rpm = 60000.0/intervalo; 
+    interrupts();
+
+
+    // Calcula RPM
+    if (intervaloAtual > 0) {
+
+        rpm = 60000000.0 /
+              (intervaloAtual * METAIS_POR_VOLTA);
     }
 
 
-    ultimaVolta = agora;
+    // Se não houver pulso durante 2 segundos,
+    // considera a roda parada
+    if (ultimoPulsoAtual != 0 &&
+        micros() - ultimoPulsoAtual > 2000000) {
 
-    if (millis() - ultimaVolta > 2000) {
-    rpm = 0;
+        rpm = 0;
     }
 
-   Serial.print("RPM = ");
-    Serial.println(rpm); 
+
+    // Calcula velocidade
+    velocidade =
+        (CIRCUNFERENCIA * rpm / 60.0) * 3.6;
 
 
-  }
+    // Mostra os dados a cada 500 ms
+    if (millis() - ultimoPrint >= 500) {
 
-  estadoAnterior = estadoAtual;
+        Serial.print("Pulsos = ");
+        Serial.print(pulsosAtual);
 
-  delay(1000);
+        Serial.print(" | RPM = ");
+        Serial.print(rpm);
 
-  
+        Serial.print(" | Velocidade = ");
+        Serial.print(velocidade);
+
+        Serial.println(" km/h");
+
+        ultimoPrint = millis();
+    }
 }
